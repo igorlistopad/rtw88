@@ -1847,6 +1847,41 @@ static bool rtw_sdio_8723bs_reschedule_tx(struct rtw_dev *rtwdev,
 	return true;
 }
 
+static bool rtw_sdio_8189es_yield_tx(struct rtw_dev *rtwdev)
+{
+	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
+	struct rtw_sdio_work_data *work_data = rtwsdio->tx_handler_data;
+	u32 status, mask;
+	bool pending = false;
+	int ret;
+
+	/* Serialize the pending check and retry with the SDIO IRQ handler. */
+	sdio_claim_host(rtwsdio->sdio_func);
+	status = rtw_sdio_readl(rtwdev,
+				rtw_sdio_to_bus_offset(rtwdev, REG_SDIO_HISR), &ret);
+	if (ret || !(status & READ_ONCE(rtwsdio->irq_mask)))
+		goto release;
+
+	/* The cached mask is retained while interrupts are disabled. */
+	mask = rtw_sdio_readl(rtwdev,
+			      rtw_sdio_to_bus_offset(rtwdev, REG_SDIO_HIMR), &ret);
+	if (ret)
+		goto release;
+
+	pending = status & mask;
+	if (pending) {
+		WRITE_ONCE(work_data->waiting_for_irq, true);
+		queue_delayed_work(rtwsdio->txwq, &work_data->work,
+				   RTW_SDIO_TX_RETRY_DELAY);
+	}
+release:
+	sdio_release_host(rtwsdio->sdio_func);
+	if (ret)
+		rtw_dbg(rtwdev, RTW_DBG_SDIO, "failed to read IRQ status: %d\n", ret);
+
+	return pending;
+}
+
 static void rtw_sdio_tx_handler(struct work_struct *work)
 {
 	struct rtw_sdio_work_data *work_data =
@@ -1854,14 +1889,12 @@ static void rtw_sdio_tx_handler(struct work_struct *work)
 			     work);
 	struct rtw_sdio *rtwsdio;
 	struct rtw_dev *rtwdev;
-	struct mmc_host *host;
 	bool yield_to_irq;
 	int limit, queue, ret;
 
 	rtwdev = work_data->rtwdev;
 	rtwsdio = (struct rtw_sdio *)rtwdev->priv;
-	host = rtwsdio->sdio_func->card->host;
-	yield_to_irq = rtwdev->chip->id == RTW_CHIP_TYPE_8188E;
+	yield_to_irq = rtw_is_8189es(rtwdev);
 	/* The retry or a new frame can restart TX before the IRQ handler. */
 	if (yield_to_irq)
 		WRITE_ONCE(work_data->waiting_for_irq, false);
@@ -1872,17 +1905,9 @@ static void rtw_sdio_tx_handler(struct work_struct *work)
 	for (queue = RTK_MAX_TX_QUEUE_NUM - 1; queue >= 0; queue--) {
 		for (limit = 0; limit < 1000; limit++) {
 			/* Let the SDIO IRQ worker claim the host before more TX. */
-			if (yield_to_irq && READ_ONCE(host->sdio_irq_pending)) {
-				/* The IRQ can finish while we arm the retry. */
-				smp_store_mb(work_data->waiting_for_irq, true);
-				if (READ_ONCE(host->sdio_irq_pending)) {
-					queue_delayed_work(rtwsdio->txwq,
-							   &work_data->work,
-							   RTW_SDIO_TX_RETRY_DELAY);
-					return;
-				}
-				WRITE_ONCE(work_data->waiting_for_irq, false);
-			}
+			if (yield_to_irq && !skb_queue_empty(&rtwsdio->tx_queue[queue]) &&
+			    rtw_sdio_8189es_yield_tx(rtwdev))
+				return;
 
 			ret = rtw_sdio_process_tx_queue(rtwdev, queue);
 			if (ret > 0)
