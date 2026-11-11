@@ -18,6 +18,7 @@
 #include "reg.h"
 #include "rtw8188e.h"
 #include "rtw8188e_table.h"
+#include "rtw8723x.h"
 #include "rx.h"
 #include "sdio.h"
 #include "tx.h"
@@ -373,29 +374,6 @@ static const u8 rtw8188e_cck_swing_table_ch14[][8] = {
 static_assert(ARRAY_SIZE(rtw8188e_cck_swing_table_ch1_ch13) ==
 	      RTW8188E_CCK_SWING_TABLE_SIZE);
 
-static const struct rtw_hw_reg rtw8188e_txagc[] = {
-	[DESC_RATE1M]	= { .addr = 0xe08, .mask = 0x0000ff00 },
-	[DESC_RATE2M]	= { .addr = 0x86c, .mask = 0x0000ff00 },
-	[DESC_RATE5_5M]	= { .addr = 0x86c, .mask = 0x00ff0000 },
-	[DESC_RATE11M]	= { .addr = 0x86c, .mask = 0xff000000 },
-	[DESC_RATE6M]	= { .addr = 0xe00, .mask = 0x000000ff },
-	[DESC_RATE9M]	= { .addr = 0xe00, .mask = 0x0000ff00 },
-	[DESC_RATE12M]	= { .addr = 0xe00, .mask = 0x00ff0000 },
-	[DESC_RATE18M]	= { .addr = 0xe00, .mask = 0xff000000 },
-	[DESC_RATE24M]	= { .addr = 0xe04, .mask = 0x000000ff },
-	[DESC_RATE36M]	= { .addr = 0xe04, .mask = 0x0000ff00 },
-	[DESC_RATE48M]	= { .addr = 0xe04, .mask = 0x00ff0000 },
-	[DESC_RATE54M]	= { .addr = 0xe04, .mask = 0xff000000 },
-	[DESC_RATEMCS0]	= { .addr = 0xe10, .mask = 0x000000ff },
-	[DESC_RATEMCS1]	= { .addr = 0xe10, .mask = 0x0000ff00 },
-	[DESC_RATEMCS2]	= { .addr = 0xe10, .mask = 0x00ff0000 },
-	[DESC_RATEMCS3]	= { .addr = 0xe10, .mask = 0xff000000 },
-	[DESC_RATEMCS4]	= { .addr = 0xe14, .mask = 0x000000ff },
-	[DESC_RATEMCS5]	= { .addr = 0xe14, .mask = 0x0000ff00 },
-	[DESC_RATEMCS6]	= { .addr = 0xe14, .mask = 0x00ff0000 },
-	[DESC_RATEMCS7]	= { .addr = 0xe14, .mask = 0xff000000 },
-};
-
 static const u32 rtw8188e_iqk_adda_regs[] = {
 	0x85c, 0xe6c, 0xe70, 0xe74, 0xe78, 0xe7c, 0xe80, 0xe84,
 	0xe88, 0xe8c, 0xed0, 0xed4, 0xed8, 0xedc, 0xee0, 0xeec
@@ -495,69 +473,6 @@ static int rtw8188e_chip_info_setup(struct rtw_dev *rtwdev)
 	return 0;
 }
 
-static void rtw8188e_efuse_grant(struct rtw_dev *rtwdev, bool on)
-{
-	if (on) {
-		rtw_write8(rtwdev, REG_EFUSE_ACCESS, EFUSE_ACCESS_ON);
-
-		rtw_write16_set(rtwdev, REG_SYS_FUNC_EN, BIT_FEN_ELDR);
-		rtw_write16_set(rtwdev, REG_SYS_CLKR, BIT_LOADER_CLK_EN | BIT_ANA8M);
-	} else {
-		rtw_write8(rtwdev, REG_EFUSE_ACCESS, EFUSE_ACCESS_OFF);
-	}
-}
-
-static void rtw8188e_cfg_ldo25(struct rtw_dev *rtwdev, bool enable)
-{
-	u8 ldo_pwr;
-
-	ldo_pwr = rtw_read8(rtwdev, REG_LDO_EFUSE_CTRL + 3);
-	if (enable) {
-		ldo_pwr &= ~BIT_MASK_LDO25_VOLTAGE;
-		ldo_pwr |= (BIT_LDO25_VOLTAGE_V25 << 4) | BIT_LDO25_EN;
-	} else {
-		ldo_pwr &= ~BIT_LDO25_EN;
-	}
-	rtw_write8(rtwdev, REG_LDO_EFUSE_CTRL + 3, ldo_pwr);
-}
-
-static void rtw8188e_set_tx_power_index_by_rate(struct rtw_dev *rtwdev,
-						u8 path, u8 rs)
-{
-	struct rtw_hal *hal = &rtwdev->hal;
-	const struct rtw_hw_reg *txagc;
-	u8 rate, pwr_index;
-	int j;
-
-	for (j = 0; j < rtw_rate_size[rs]; j++) {
-		rate = rtw_rate_section[rs][j];
-		pwr_index = hal->tx_pwr_tbl[path][rate];
-
-		if (rate >= ARRAY_SIZE(rtw8188e_txagc)) {
-			rtw_warn(rtwdev, "rate 0x%x isn't supported\n", rate);
-			continue;
-		}
-		txagc = &rtw8188e_txagc[rate];
-		if (!txagc->addr) {
-			rtw_warn(rtwdev, "rate 0x%x isn't defined\n", rate);
-			continue;
-		}
-
-		rtw_write32_mask(rtwdev, txagc->addr, txagc->mask, pwr_index);
-	}
-}
-
-static void rtw8188e_set_tx_power_index(struct rtw_dev *rtwdev)
-{
-	struct rtw_hal *hal = &rtwdev->hal;
-	int rs, path;
-
-	for (path = 0; path < hal->rf_path_num; path++) {
-		for (rs = 0; rs <= RTW_RATE_SECTION_HT_1S; rs++)
-			rtw8188e_set_tx_power_index_by_rate(rtwdev, path, rs);
-	}
-}
-
 static void rtw8188e_set_ampdu_factor(struct rtw_dev *rtwdev, u8 factor)
 {
 	static const u8 agg_limits[] = {0x41, 0xa8, 0x72, 0xb9};
@@ -570,70 +485,6 @@ static void rtw8188e_set_ampdu_factor(struct rtw_dev *rtwdev, u8 factor)
 		low = min_t(u8, agg_limits[i] & 0xf, limit);
 		rtw_write8(rtwdev, REG_AGGLEN_LMT + i, (high << 4) | low);
 	}
-}
-
-static void rtw8188e_false_alarm_statistics(struct rtw_dev *rtwdev)
-{
-	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
-	u32 cck_fa_cnt;
-	u32 ofdm_fa_cnt;
-	u32 crc32_cnt;
-	u32 val32;
-
-	/* Hold the counters while reading them. */
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_HOLDC_11N, BIT_MASK_OFDM_FA_KEEP, 1);
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_RSTD_11N, BIT_MASK_OFDM_FA_KEEP1, 1);
-	rtw_write32_mask(rtwdev, REG_CCK_FA_RST_11N, BIT_MASK_CCK_CNT_KEEP, 1);
-	rtw_write32_mask(rtwdev, REG_CCK_FA_RST_11N, BIT_MASK_CCK_FA_KEEP, 1);
-
-	cck_fa_cnt = rtw_read32_mask(rtwdev, REG_CCK_FA_LSB_11N, MASKBYTE0);
-	cck_fa_cnt += rtw_read32_mask(rtwdev, REG_CCK_FA_MSB_11N, MASKBYTE3) << 8;
-
-	val32 = rtw_read32(rtwdev, REG_OFDM_FA_TYPE1_11N);
-	ofdm_fa_cnt = u32_get_bits(val32, BIT_MASK_OFDM_FF_CNT);
-	ofdm_fa_cnt += u32_get_bits(val32, BIT_MASK_OFDM_SF_CNT);
-	val32 = rtw_read32(rtwdev, REG_OFDM_FA_TYPE2_11N);
-	dm_info->ofdm_cca_cnt = u32_get_bits(val32, BIT_MASK_OFDM_CCA_CNT);
-	ofdm_fa_cnt += u32_get_bits(val32, BIT_MASK_OFDM_PF_CNT);
-	val32 = rtw_read32(rtwdev, REG_OFDM_FA_TYPE3_11N);
-	ofdm_fa_cnt += u32_get_bits(val32, BIT_MASK_OFDM_RI_CNT);
-	ofdm_fa_cnt += u32_get_bits(val32, BIT_MASK_OFDM_CRC_CNT);
-	val32 = rtw_read32(rtwdev, REG_OFDM_FA_TYPE4_11N);
-	ofdm_fa_cnt += u32_get_bits(val32, BIT_MASK_OFDM_MNS_CNT);
-
-	dm_info->cck_fa_cnt = cck_fa_cnt;
-	dm_info->ofdm_fa_cnt = ofdm_fa_cnt;
-	dm_info->total_fa_cnt = cck_fa_cnt + ofdm_fa_cnt;
-
-	dm_info->cck_err_cnt = rtw_read32(rtwdev, REG_CCK_CRC32_ERR_11N);
-	dm_info->cck_ok_cnt = rtw_read32(rtwdev, REG_CCK_CRC32_OK_11N);
-	crc32_cnt = rtw_read32(rtwdev, REG_OFDM_CRC32_CNT_11N);
-	dm_info->ofdm_err_cnt = u32_get_bits(crc32_cnt, BIT_MASK_OFDM_LCRC_ERR);
-	dm_info->ofdm_ok_cnt = u32_get_bits(crc32_cnt, BIT_MASK_OFDM_LCRC_OK);
-	crc32_cnt = rtw_read32(rtwdev, REG_HT_CRC32_CNT_11N);
-	dm_info->ht_err_cnt = u32_get_bits(crc32_cnt, BIT_MASK_HT_CRC_ERR);
-	dm_info->ht_ok_cnt = u32_get_bits(crc32_cnt, BIT_MASK_HT_CRC_OK);
-	dm_info->vht_err_cnt = 0;
-	dm_info->vht_ok_cnt = 0;
-
-	val32 = rtw_read32(rtwdev, REG_CCK_CCA_CNT_11N);
-	dm_info->cck_cca_cnt = (u32_get_bits(val32, BIT_MASK_CCK_FA_MSB) << 8) |
-			       u32_get_bits(val32, BIT_MASK_CCK_FA_LSB);
-	dm_info->total_cca_cnt = dm_info->cck_cca_cnt + dm_info->ofdm_cca_cnt;
-
-	/* Reset the counters and resume counting. */
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_RSTC_11N, BIT_MASK_OFDM_FA_RST, 1);
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_RSTC_11N, BIT_MASK_OFDM_FA_RST, 0);
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_RSTD_11N, BIT_MASK_OFDM_FA_RST1, 1);
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_RSTD_11N, BIT_MASK_OFDM_FA_RST1, 0);
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_HOLDC_11N, BIT_MASK_OFDM_FA_KEEP, 0);
-	rtw_write32_mask(rtwdev, REG_OFDM_FA_RSTD_11N, BIT_MASK_OFDM_FA_KEEP1, 0);
-	rtw_write32_mask(rtwdev, REG_CCK_FA_RST_11N, BIT_MASK_CCK_CNT_KPEN, 0);
-	rtw_write32_mask(rtwdev, REG_CCK_FA_RST_11N, BIT_MASK_CCK_CNT_KPEN, 2);
-	rtw_write32_mask(rtwdev, REG_CCK_FA_RST_11N, BIT_MASK_CCK_FA_KPEN, 0);
-	rtw_write32_mask(rtwdev, REG_CCK_FA_RST_11N, BIT_MASK_CCK_FA_KPEN, 2);
-	rtw_write32_mask(rtwdev, REG_PAGE_F_RST_11N, BIT_MASK_F_RST_ALL, 1);
-	rtw_write32_mask(rtwdev, REG_PAGE_F_RST_11N, BIT_MASK_F_RST_ALL, 0);
 }
 
 static int rtw8188e_llt_write(struct rtw_dev *rtwdev, u8 address, u8 next)
@@ -1704,14 +1555,14 @@ static void rtw8188e_iqk_restore_regs(struct rtw_dev *rtwdev,
 	rtw_write32(rtwdev, REG_RXIQK_TONE_A_11N, 0x01008c00);
 }
 
-static bool rtw8188e_iqk_similarity_cmp(s32 result[][IQK_NR], u8 c1, u8 c2)
+static bool rtw8188e_iqk_similarity_cmp(s32 result[][RTW8188E_IQK_NR], u8 c1, u8 c2)
 {
 	u8 candidate = IQK_ROUND_INVALID;
 	u32 bitmap = 0;
 	s32 x, y;
 	int i;
 
-	for (i = 0; i < IQK_NR; i++) {
+	for (i = 0; i < RTW8188E_IQK_NR; i++) {
 		x = sign_extend32(result[c1][i], 9);
 		y = sign_extend32(result[c2][i], 9);
 		if (abs(x - y) <= MAX_TOLERANCE)
@@ -1739,7 +1590,7 @@ static bool rtw8188e_iqk_similarity_cmp(s32 result[][IQK_NR], u8 c1, u8 c2)
 		return false;
 	}
 
-	for (i = 0; i < IQK_NR; i += 2) {
+	for (i = 0; i < RTW8188E_IQK_NR; i += 2) {
 		if (bitmap & GENMASK(i + 1, i))
 			continue;
 
@@ -1775,7 +1626,7 @@ static void rtw8188e_iqk_fill_matrix(struct rtw_dev *rtwdev, const s32 result[])
 }
 
 static void
-rtw8188e_iqk_one_round(struct rtw_dev *rtwdev, s32 result[IQK_NR], int round,
+rtw8188e_iqk_one_round(struct rtw_dev *rtwdev, s32 result[RTW8188E_IQK_NR], int round,
 		       const struct rtw8188e_iqk_backup_regs *backup, bool pi_enabled)
 {
 	int i, retry;
@@ -1839,7 +1690,7 @@ static void rtw8188e_phy_calibration(struct rtw_dev *rtwdev)
 {
 	struct rtw8188e_iqk_backup_regs backup;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
-	s32 result[IQK_ROUND_SIZE][IQK_NR] = {};
+	s32 result[IQK_ROUND_SIZE][RTW8188E_IQK_NR] = {};
 	u32 hssi_a, hssi_b;
 	u8 candidate = IQK_ROUND_INVALID;
 	int round, i, prev;
@@ -1884,7 +1735,7 @@ static void rtw8188e_phy_calibration(struct rtw_dev *rtwdev)
 			break;
 	}
 	if (candidate == IQK_ROUND_INVALID) {
-		for (i = 0; i < IQK_NR; i++)
+		for (i = 0; i < RTW8188E_IQK_NR; i++)
 			hybrid_sum += result[IQK_ROUND_HYBRID][i];
 		if (hybrid_sum)
 			candidate = IQK_ROUND_HYBRID;
@@ -2784,11 +2635,11 @@ static const struct rtw_chip_ops rtw8188e_ops = {
 	.query_rx_desc		= rtw8188e_query_rx_desc,
 	.read_rf		= rtw_phy_read_rf_sipi,
 	.write_rf		= rtw_phy_write_rf_reg_sipi,
-	.set_tx_power_index	= rtw8188e_set_tx_power_index,
+	.set_tx_power_index	= rtw8723x_set_tx_power_index,
 	.set_ampdu_factor	= rtw8188e_set_ampdu_factor,
-	.cfg_ldo25		= rtw8188e_cfg_ldo25,
-	.efuse_grant		= rtw8188e_efuse_grant,
-	.false_alarm_statistics	= rtw8188e_false_alarm_statistics,
+	.cfg_ldo25		= rtw8723x_cfg_ldo25,
+	.efuse_grant		= rtw8723x_efuse_grant,
+	.false_alarm_statistics	= rtw8723x_false_alarm_statistics,
 	.dig_get_boundary	= rtw8188e_dig_get_boundary,
 	.phy_calibration	= rtw8188e_phy_calibration,
 	.cck_pd_set		= rtw_phy_cck_pd_set,
