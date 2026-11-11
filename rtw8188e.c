@@ -574,7 +574,6 @@ static void rtw8188e_set_default_port(struct rtw_dev *rtwdev,
 static int rtw8188e_lps_port(struct rtw_dev *rtwdev, struct rtw_vif *rtwvif)
 {
 	struct ieee80211_vif *vif = rtwvif_to_vif(rtwvif);
-	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
 	const struct rtw_vif_port *old_conf = rtwvif->conf;
 	u8 port = rtwvif->port;
 	u8 mac_id = rtwvif->mac_id;
@@ -607,12 +606,9 @@ static int rtw8188e_lps_port(struct rtw_dev *rtwdev, struct rtw_vif *rtwvif)
 	ieee80211_stop_queues(rtwdev->hw);
 	synchronize_net();
 	flush_work(&rtwdev->tx_work);
-	flush_delayed_work(&rtwsdio->tx_handler_data->work);
-	for (i = 0; i < RTK_MAX_TX_QUEUE_NUM; i++) {
-		if (!skb_queue_empty(&rtwsdio->tx_queue[i])) {
-			ret = -EAGAIN;
-			goto wake_queues;
-		}
+	if (!rtw_hci_tx_queues_empty(rtwdev, GENMASK(RTK_MAX_TX_QUEUE_NUM - 1, 0))) {
+		ret = -EAGAIN;
+		goto wake_queues;
 	}
 	for (i = 0; i < RTW_DMA_MAPPING_MAX; i++) {
 		const struct rtw_prioq_addr *addr = &rtwdev->chip->prioq_addrs->prio[i];
@@ -777,17 +773,13 @@ static void rtw8188e_set_macid_link(struct rtw_dev *rtwdev, u8 mac_id,
 static bool rtw8188e_ap_mgmt_tx_done(struct rtw_dev *rtwdev,
 				     struct ieee80211_vif *vif)
 {
-	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
 	struct rtw_tx_report *report = &rtwdev->tx_report;
 	const struct ieee80211_hdr_3addr *hdr;
 	struct sk_buff *skb;
 	unsigned long flags;
 	bool empty = true;
 
-	/* A dequeued frame may still be on its way to the hardware queue. */
-	flush_delayed_work(&rtwsdio->tx_handler_data->work);
-
-	if (!skb_queue_empty(&rtwsdio->tx_queue[RTW_TX_QUEUE_MGMT]) ||
+	if (!rtw_hci_tx_queues_empty(rtwdev, BIT(RTW_TX_QUEUE_MGMT)) ||
 	    !rtw_read32_mask(rtwdev, REG_BCNQ_INFO, BIT_MGQ_CPU_EMPTY))
 		return false;
 
@@ -812,7 +804,6 @@ static bool rtw8188e_ap_mgmt_tx_done(struct rtw_dev *rtwdev,
 static void rtw8188e_config_bcn(struct rtw_dev *rtwdev,
 				struct ieee80211_vif *vif, bool enable)
 {
-	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
 	struct rtw8188e_priv *priv = rtwdev->chip_priv;
 	struct rtw_vif *rtwvif;
 	bool empty;
@@ -831,8 +822,7 @@ static void rtw8188e_config_bcn(struct rtw_dev *rtwdev,
 			rtw_write8_clr(rtwdev, rtwvif->conf->bcn_ctrl.addr,
 				       BIT_EN_BCN_FUNCTION);
 		}
-		rtwsdio->irq_mask &= ~REG_SDIO_HIMR_ATIMEND;
-		rtw_write32(rtwdev, REG_SDIO_HIMR, rtwsdio->irq_mask);
+		rtw_hci_update_irq_mask(rtwdev, REG_SDIO_HIMR_ATIMEND, 0);
 		clear_bit(RTW8188E_FLAG_BEACON_UPDATE, &priv->flags);
 		rtw_write16_clr(rtwdev, REG_CR, BIT_ENSWBCN);
 		return;
@@ -852,8 +842,7 @@ static void rtw8188e_config_bcn(struct rtw_dev *rtwdev,
 	rtw_write8(rtwdev, REG_TBTT_PROHIBIT + 1, 0x80);
 	rtw_write8(rtwdev, REG_RD_CTRL + 1, 0x6f);
 	/* Refresh the template after the TBTT beacon download prohibition. */
-	rtwsdio->irq_mask |= REG_SDIO_HIMR_ATIMEND;
-	rtw_write32(rtwdev, REG_SDIO_HIMR, rtwsdio->irq_mask);
+	rtw_hci_update_irq_mask(rtwdev, 0, REG_SDIO_HIMR_ATIMEND);
 }
 
 static u32 rtw8188e_beacon_size(struct rtw_dev *rtwdev)
@@ -917,11 +906,9 @@ static void rtw8188e_update_beacon(struct rtw_dev *rtwdev)
 
 static void rtw8188e_sdio_irq_handler(struct rtw_dev *rtwdev, u32 status)
 {
-	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
 	struct rtw8188e_priv *priv = rtwdev->chip_priv;
 
 	if ((status & REG_SDIO_HISR_ATIMEND) &&
-	    (READ_ONCE(rtwsdio->irq_mask) & REG_SDIO_HIMR_ATIMEND) &&
 	    test_bit(RTW_FLAG_RUNNING, rtwdev->flags)) {
 		set_bit(RTW8188E_FLAG_BEACON_UPDATE, &priv->flags);
 		ieee80211_queue_work(rtwdev->hw, &rtwdev->update_beacon_work);

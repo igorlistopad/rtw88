@@ -1116,6 +1116,17 @@ static int rtw_sdio_start(struct rtw_dev *rtwdev)
 	return 0;
 }
 
+static void rtw_sdio_update_irq_mask(struct rtw_dev *rtwdev, u32 clear, u32 set)
+{
+	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
+	u32 mask;
+
+	lockdep_assert_held(&rtwdev->mutex);
+	mask = (rtwsdio->irq_mask & ~clear) | set;
+	WRITE_ONCE(rtwsdio->irq_mask, mask);
+	rtw_write32(rtwdev, REG_SDIO_HIMR, mask);
+}
+
 static void rtw_sdio_stop(struct rtw_dev *rtwdev)
 {
 	rtw_sdio_disable_interrupt(rtwdev);
@@ -1180,6 +1191,80 @@ static void rtw_sdio_tx_kick_off(struct rtw_dev *rtwdev)
 	 */
 	mod_delayed_work(rtwsdio->txwq, &rtwsdio->tx_handler_data->work, 0);
 }
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
+struct rtw_sdio_tx_queue_check {
+	struct work_struct work;
+	struct rtw_sdio *rtwsdio;
+	u32 queues;
+	bool empty;
+};
+
+static void rtw_sdio_check_tx_queues(struct work_struct *work)
+{
+	struct rtw_sdio_tx_queue_check *check =
+		container_of(work, struct rtw_sdio_tx_queue_check, work);
+	int queue;
+
+	check->empty = true;
+	for (queue = 0; queue < RTK_MAX_TX_QUEUE_NUM; queue++) {
+		if ((check->queues & BIT(queue)) &&
+		    !skb_queue_empty(&check->rtwsdio->tx_queue[queue])) {
+			check->empty = false;
+			break;
+		}
+	}
+}
+
+static bool rtw_sdio_tx_queues_empty(struct rtw_dev *rtwdev, u32 queues)
+{
+	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
+	struct rtw_sdio_tx_queue_check check = {
+		.rtwsdio = rtwsdio,
+		.queues = queues,
+	};
+
+	lockdep_assert_held(&rtwdev->mutex);
+	flush_delayed_work(&rtwsdio->tx_handler_data->work);
+	/* Run the check on the ordered TX workqueue so a retry cannot have a
+	 * dequeued frame in flight while the software queues are inspected.
+	 */
+	INIT_WORK_ONSTACK(&check.work, rtw_sdio_check_tx_queues);
+	queue_work(rtwsdio->txwq, &check.work);
+	flush_work(&check.work);
+	destroy_work_on_stack(&check.work);
+	rtw_sdio_tx_kick_off(rtwdev);
+
+	return check.empty;
+}
+#else
+static bool rtw_sdio_tx_queues_empty(struct rtw_dev *rtwdev, u32 queues)
+{
+	struct rtw_sdio *rtwsdio = (struct rtw_sdio *)rtwdev->priv;
+	struct delayed_work *work = &rtwsdio->tx_handler_data->work;
+	bool empty = true;
+	int queue;
+
+	lockdep_assert_held(&rtwdev->mutex);
+	flush_delayed_work(work);
+	/* The worker can requeue itself while the flush waits. Stop that retry
+	 * before checking for frames which may already have been dequeued.
+	 */
+	disable_delayed_work_sync(work);
+	for (queue = 0; queue < RTK_MAX_TX_QUEUE_NUM; queue++) {
+		if ((queues & BIT(queue)) &&
+		    !skb_queue_empty(&rtwsdio->tx_queue[queue])) {
+			empty = false;
+			break;
+		}
+	}
+	enable_delayed_work(work);
+	/* Producers or the IRQ handler may have tried to queue disabled work. */
+	rtw_sdio_tx_kick_off(rtwdev);
+
+	return empty;
+}
+#endif
 
 static void rtw_sdio_link_ps(struct rtw_dev *rtwdev, bool enter)
 {
@@ -1529,7 +1614,7 @@ static void rtw_sdio_handle_interrupt(struct sdio_func *sdio_func)
 	hisr = rtw_read32(rtwdev, REG_SDIO_HISR);
 
 	if (ops->sdio_irq_handler)
-		ops->sdio_irq_handler(rtwdev, hisr);
+		ops->sdio_irq_handler(rtwdev, hisr & READ_ONCE(rtwsdio->irq_mask));
 
 	if (hisr & REG_SDIO_HISR_TXERR)
 		rtw_sdio_tx_err_isr(rtwdev);
@@ -1623,6 +1708,8 @@ static void rtw_sdio_declaim(struct rtw_dev *rtwdev,
 }
 
 static const struct rtw_hci_ops rtw_sdio_ops = {
+	.tx_queues_empty = rtw_sdio_tx_queues_empty,
+	.update_irq_mask = rtw_sdio_update_irq_mask,
 	.tx_write = rtw_sdio_tx_write,
 	.tx_kick_off = rtw_sdio_tx_kick_off,
 	.setup = rtw_sdio_setup,

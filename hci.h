@@ -12,6 +12,12 @@ struct rtw_hci_ops {
 			struct sk_buff *skb);
 	void (*tx_kick_off)(struct rtw_dev *rtwdev);
 	void (*flush_queues)(struct rtw_dev *rtwdev, u32 queues, bool drop);
+	/* Sleepable software-queue check after draining current transport work.
+	 * queues uses rtw_tx_queue_type bits; on-air completion is not checked.
+	 * Caller holds rtwdev->mutex and quiesces producers for a stable result.
+	 */
+	bool (*tx_queues_empty)(struct rtw_dev *rtwdev, u32 queues);
+	void (*update_irq_mask)(struct rtw_dev *rtwdev, u32 clear, u32 set);
 	int (*setup)(struct rtw_dev *rtwdev);
 	int (*start)(struct rtw_dev *rtwdev);
 	void (*stop)(struct rtw_dev *rtwdev);
@@ -48,6 +54,21 @@ static inline void rtw_hci_tx_kick_off(struct rtw_dev *rtwdev)
 static inline int rtw_hci_setup(struct rtw_dev *rtwdev)
 {
 	return rtwdev->hci.ops->setup(rtwdev);
+}
+
+static inline bool rtw_hci_tx_queues_empty(struct rtw_dev *rtwdev, u32 queues)
+{
+	if (!rtwdev->hci.ops->tx_queues_empty)
+		return false;
+
+	return rtwdev->hci.ops->tx_queues_empty(rtwdev, queues);
+}
+
+static inline void rtw_hci_update_irq_mask(struct rtw_dev *rtwdev,
+					   u32 clear, u32 set)
+{
+	if (rtwdev->hci.ops->update_irq_mask)
+		rtwdev->hci.ops->update_irq_mask(rtwdev, clear, set);
 }
 
 static inline int rtw_hci_start(struct rtw_dev *rtwdev)
