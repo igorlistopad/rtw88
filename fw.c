@@ -1295,9 +1295,16 @@ static struct sk_buff *rtw_get_rsvd_page_skb(struct ieee80211_hw *hw,
 
 	switch (rsvd_pkt->type) {
 	case RSVD_BEACON:
-		if (rtwdev->chip->ops->get_rsvd_beacon) {
-			skb_new = rtwdev->chip->ops->get_rsvd_beacon(rtwdev, vif,
-								 &tim_offset);
+		if (rtwdev->chip->id == RTW_CHIP_TYPE_8188E) {
+			struct ieee80211_mutable_offsets offsets = {};
+
+			/* Building reserved pages must preserve the DTIM count. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
+			skb_new = ieee80211_beacon_get_template(hw, vif, &offsets, 0);
+#else
+			skb_new = ieee80211_beacon_get_template(hw, vif, &offsets);
+#endif
+			tim_offset = offsets.tim_offset;
 		} else {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
 			skb_new = ieee80211_beacon_get_tim(hw, vif, &tim_offset, NULL, 0);

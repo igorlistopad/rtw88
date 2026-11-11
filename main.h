@@ -1023,12 +1023,9 @@ struct rtw_chip_ops {
 	void (*power_off)(struct rtw_dev *rtwdev);
 	int (*mac_init)(struct rtw_dev *rtwdev);
 	int (*mac_postinit)(struct rtw_dev *rtwdev);
-	int (*llt_init)(struct rtw_dev *rtwdev);
 	/* vif is NULL when stopping all beacons during device shutdown. */
 	void (*config_bcn)(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 			   bool enable);
-	struct sk_buff *(*get_rsvd_beacon)(struct rtw_dev *rtwdev,
-					   struct ieee80211_vif *vif, u16 *tim_offset);
 	void (*update_beacon)(struct rtw_dev *rtwdev);
 	void (*set_default_port)(struct rtw_dev *rtwdev, struct rtw_vif *rtwvif);
 	int (*set_pwr_mode)(struct rtw_dev *rtwdev);
@@ -1094,17 +1091,16 @@ struct rtw_chip_ops {
 	void (*config_txrx_mode)(struct rtw_dev *rtwdev, u8 tx_path,
 				 u8 rx_path, bool is_tx2_path);
 	void (*led_set)(struct led_classdev *led, enum led_brightness brightness);
-	/* for USB/SDIO only */
 	void (*fill_tx_desc)(struct rtw_dev *rtwdev,
 			     struct rtw_tx_pkt_info *pkt_info,
 			     struct rtw_tx_desc *txdesc);
+	/* for USB/SDIO only */
 	void (*fill_txdesc_checksum)(struct rtw_dev *rtwdev,
 				     struct rtw_tx_pkt_info *pkt_info,
 				     struct rtw_tx_desc *txdesc);
 
 	/* for SDIO only */
 	void (*sdio_irq_handler)(struct rtw_dev *rtwdev, u32 status);
-	void (*config_rx_aggregation)(struct rtw_dev *rtwdev);
 	/* Bytes consumed for a report, zero for an MPDU, or a negative error. */
 	int (*rx_report_handle)(struct rtw_dev *rtwdev, const u8 *buf, u32 len);
 

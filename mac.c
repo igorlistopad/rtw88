@@ -1268,8 +1268,9 @@ static int __priority_queue_cfg_legacy(struct rtw_dev *rtwdev,
 	rtw_write8(rtwdev, REG_MGQ_BDNY, fifo->rsvd_boundary);
 	rtw_write8(rtwdev, REG_WMAC_LBK_BF_HD, fifo->rsvd_boundary);
 
-	if (chip->ops->llt_init)
-		return chip->ops->llt_init(rtwdev);
+	/* RTL8188E initializes the LLT in its mac_init callback. */
+	if (chip->id == RTW_CHIP_TYPE_8188E)
+		return 0;
 
 	rtw_write32_set(rtwdev, REG_AUTO_LLT, BIT_AUTO_INIT_LLT);
 

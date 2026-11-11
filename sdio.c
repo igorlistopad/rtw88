@@ -981,15 +981,14 @@ static void rtw_sdio_init(struct rtw_dev *rtwdev)
 
 static void rtw_sdio_enable_rx_aggregation(struct rtw_dev *rtwdev)
 {
-	const struct rtw_chip_ops *ops = rtwdev->chip->ops;
 	u8 size, timeout;
 
-	if (ops->config_rx_aggregation) {
-		ops->config_rx_aggregation(rtwdev);
-		return;
-	}
-
 	switch (rtwdev->chip->id) {
+	case RTW_CHIP_TYPE_8188E:
+		rtw_write8(rtwdev, REG_RXDMA_AGG_PG_TH, 0x24);
+		rtw_write8(rtwdev, REG_RXDMA_AGG_PG_TH + 1, 0x06);
+		rtw_write8_set(rtwdev, REG_TXDMA_PQ_MAP, BIT_RXDMA_AGG_EN);
+		return;
 	case RTW_CHIP_TYPE_8723B:
 	case RTW_CHIP_TYPE_8703B:
 	case RTW_CHIP_TYPE_8821A:

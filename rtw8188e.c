@@ -520,6 +520,12 @@ static int rtw8188e_llt_init(struct rtw_dev *rtwdev)
 
 static int rtw8188e_mac_init(struct rtw_dev *rtwdev)
 {
+	int ret;
+
+	ret = rtw8188e_llt_init(rtwdev);
+	if (ret)
+		return ret;
+
 	/* Management reception requires RCR.AMF as well as RXFLTMAP0. */
 	rtwdev->hal.rcr |= BIT_AMF;
 	rtwdev->hal.rcr &= ~(BIT_VHT_DACK | BIT_PKTCTL_DLEN);
@@ -715,13 +721,6 @@ static int rtw8188e_set_pwr_mode(struct rtw_dev *rtwdev)
 	return 0;
 }
 
-static void rtw8188e_config_rx_aggregation(struct rtw_dev *rtwdev)
-{
-	rtw_write8(rtwdev, REG_RXDMA_AGG_PG_TH, 0x24);
-	rtw_write8(rtwdev, REG_RXDMA_AGG_PG_TH + 1, 0x06);
-	rtw_write8_set(rtwdev, REG_TXDMA_PQ_MAP, BIT_RXDMA_AGG_EN);
-}
-
 static int rtw8188e_write_page(struct rtw_dev *rtwdev, u16 page, u8 *buf,
 			       u32 size, bool beacon)
 {
@@ -855,23 +854,6 @@ static void rtw8188e_config_bcn(struct rtw_dev *rtwdev,
 	/* Refresh the template after the TBTT beacon download prohibition. */
 	rtwsdio->irq_mask |= REG_SDIO_HIMR_ATIMEND;
 	rtw_write32(rtwdev, REG_SDIO_HIMR, rtwsdio->irq_mask);
-}
-
-static struct sk_buff *rtw8188e_get_rsvd_beacon(struct rtw_dev *rtwdev,
-						struct ieee80211_vif *vif,
-						u16 *tim_offset)
-{
-	struct ieee80211_mutable_offsets offsets = {};
-	struct sk_buff *skb;
-
-	/* Building reserved pages must preserve the DTIM count. */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
-	skb = ieee80211_beacon_get_template(rtwdev->hw, vif, &offsets, 0);
-#else
-	skb = ieee80211_beacon_get_template(rtwdev->hw, vif, &offsets);
-#endif
-	*tim_offset = offsets.tim_offset;
-	return skb;
 }
 
 static u32 rtw8188e_beacon_size(struct rtw_dev *rtwdev)
@@ -2615,11 +2597,9 @@ static const struct rtw_chip_ops rtw8188e_ops = {
 	.power_off		= rtw_power_off,
 	.mac_init		= rtw8188e_mac_init,
 	.mac_postinit		= rtw8188e_mac_postinit,
-	.llt_init		= rtw8188e_llt_init,
 	.write_rsvd_page		= rtw8188e_write_rsvd_page,
 	.fill_rsvd_page_desc	= rtw8188e_fill_rsvd_page_desc,
 	.config_bcn		= rtw8188e_config_bcn,
-	.get_rsvd_beacon		= rtw8188e_get_rsvd_beacon,
 	.update_beacon		= rtw8188e_update_beacon,
 	.set_default_port	= rtw8188e_set_default_port,
 	.set_pwr_mode		= rtw8188e_set_pwr_mode,
@@ -2651,7 +2631,6 @@ static const struct rtw_chip_ops rtw8188e_ops = {
 	.fill_tx_desc		= rtw8188e_fill_tx_desc,
 	.fill_txdesc_checksum	= rtw8188e_fill_txdesc_checksum,
 	.sdio_irq_handler	= rtw8188e_sdio_irq_handler,
-	.config_rx_aggregation	= rtw8188e_config_rx_aggregation,
 	.rx_report_handle	= rtw8188e_rx_report_handle,
 };
 
